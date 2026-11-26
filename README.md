@@ -212,6 +212,27 @@ keepalive.sh 移植了同一套轮转逻辑（`--watch` 常驻和 cron `--once` 
 - 与 Worker 版的两点差异：没有 `INSTABOX_PEAK_HOURS` 自动排点、停机时长封顶 600 秒（Worker 超 10 分钟走 KV 存储，sh 版直接封顶）；`--status` 会多打一行每台的 `maxRun 剩 Xmin`
 - 平台 max-run 强制挂起的冷却期内（`cooldownUntil` 未到）自动跳过，不白打唤醒接口
 
+### 用真实 exec 把 run 顶到 480 分钟（默认开，本 fork 新增）
+
+平台只把**真实 use**算进 run 延长：命令、文件读写、公网端口请求、桌面操作、终端/SSH 流量、≥0.25 vCPU 的 CPU 负载。`activity lease` 和 `wake` 明确**不算**（见官方 `docs/machines/auto-pause.md` 的「Runtime on the free plan」）。
+
+于是只续租的话，免费机的 run 永远停在初始的 120 分钟，兜底轮转 `CYCLE_MARGIN_MIN=20` 就会在 **100 分钟**时转一次 —— 一天 14~15 次。实测日志间隔 100.1~100.5 分钟，正是 `120 - 20`。
+
+本 fork 在每轮 cron 里补一条最轻的 exec（默认 `true`，1 个子请求）：
+
+```
+续租 → POST /v1/machines/{id}/exec {"cmd":"true"}
+```
+
+这样「最近 30 分钟」窗口里始终有 ≥5 分钟处于活动状态，run 会 120 → 240 → 360 → 480 一路延长，轮转就变成**每 8 小时一次**（一天 3 次），每次真实冻结实测 **2.3~5 秒**。
+
+- 关掉：`INSTABOX_TOUCH = "0"`（回到「只续租」的老行为）
+- 换更重的活动信号：`INSTABOX_TOUCH_CMD = "..."`，默认 `true`
+- 多账号单独覆盖：`INSTABOX_TOUCH_2`、`INSTABOX_TOUCH_CMD_2`
+- `/status` 里每台会多一个 `extend: {ok:true}`，表示这一轮的 exec 续命发成功了
+
+> 注意：exec 只对 `running` 的机器发。机器在 `suspended` 时会先走 409 自愈（resume → 续租 → 再 exec），这条链路已实测通过。
+
 ## 接口
 
 ```

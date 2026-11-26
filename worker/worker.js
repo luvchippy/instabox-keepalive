@@ -341,6 +341,10 @@ function cfg(env) {
     peakText: (env.INSTABOX_PEAK_HOURS || "").trim(),
     // hourly（默认）：同一小时的“成功”不重复写 KV，省额度；every：每次都写；off：不写
     logMode: (env.INSTABOX_LOG_MODE || "hourly").trim(),
+    // 平台只把「真实 use」算进 run 延长：activity lease 和 wake 都不算。
+    // 所以默认每轮再发一条极轻的 exec，把 run 从 120 分钟顶到 480 分钟（见 touchRun）。
+    touch: parseAutoResume(env.INSTABOX_TOUCH ?? "1", true),
+    touchCmd: (env.INSTABOX_TOUCH_CMD || "true").trim() || "true",
   };
   if (!cycleWarning && base.cycleHoldSec.max > 600 && !base.kv) {
     cycleWarning = "停机时长 > 600 秒需要绑定 KV（LOG），否则会封顶 600 秒";
@@ -461,6 +465,9 @@ function accountsOf(env, base) {
       cycleHoldSec: parseRange(setting(env, "CYCLE_HOLD_SEC", n), base.cycleHoldSec.min, base.cycleHoldSec.max, 900),
       kv: base.kv,
       wakeJitterMin: parseRange(setting(env, "WAKE_JITTER_MIN", n), base.wakeJitterMin.min, base.wakeJitterMin.max, 30),
+      // 真实 exec 续命：账号级可单独关（INSTABOX_TOUCH_2=0）
+      touch: parseAutoResume(setting(env, "TOUCH", n), base.touch),
+      touchCmd: setting(env, "TOUCH_CMD", n) || base.touchCmd,
       peakHours: peaks,
       peakText: pk || base.peakText,
       api: base.api,
@@ -565,6 +572,19 @@ async function logEvent(c, entry, force) {
 
 const lease = (c, id) =>
   call(c, "PUT", `/v1/machines/${id}/activity-leases/${c.lease}`, { ttlSeconds: c.ttl });
+
+// run 计时器只认「真实 use」：命令、文件读写、公网端口请求、桌面操作、终端/SSH 流量、
+// 以及 ≥0.25 vCPU 的 CPU 负载。activity lease 和 wake 明确不算（官方 auto-pause 文档）。
+// 免费机每轮 run 从 120 分钟起，剩 5 分钟时按「最近 30 分钟里有几分钟在用」决定延长：
+//   ≥5 分钟 → +120，1~4 分钟 → +30，0 分钟 → 不变，上限 480 分钟。
+// 于是每轮 cron 补一条最轻的 exec，让 30 分钟窗口里至少有 5 分钟处于活动状态，
+// run 就能一路涨到 480 —— 轮转频率从「每 100 分钟一次」降到「每 8 小时一次」。
+async function touchRun(c, id) {
+  const r = await call(c, "POST", `/v1/machines/${id}/exec`, { cmd: c.touchCmd });
+  return r.ok
+    ? { ok: true }
+    : { ok: false, status: r.status, error: (r.text || "").slice(0, 120) };
+}
 
 // 409 machine_not_running：机器被平台挂起（suspended）或停掉了，续租对它是无效的
 const isNotRunning = (r) =>
@@ -798,10 +818,20 @@ async function keepaliveAccount(acc, budget) {
 
       const r = await lease(acc, m.id);
       if (r.ok) {
-        results.push({ ...base, ok: true, expiresAt: r.json?.expiresAt, ...view });
+        // 续上租约之后补一次真实 exec，让这台机器的 run 能继续往上延长
+        const ext = acc.touch ? await touchRun(acc, m.id) : null;
+        results.push({
+          ...base,
+          ok: true,
+          expiresAt: r.json?.expiresAt,
+          ...(ext ? { extend: ext } : {}),
+          ...view,
+        });
       } else if (acc.autoResume && isNotRunning(r)) {
         // 被挂起了：续租是空转，先把它弄醒再续
-        results.push({ ...base, ...view, ...(await wakeThenLease(acc, m)) });
+        const w = await wakeThenLease(acc, m);
+        const ext = w.ok && acc.touch ? await touchRun(acc, m.id) : null;
+        results.push({ ...base, ...view, ...w, ...(ext ? { extend: ext } : {}) });
       } else {
         results.push({ ...base, ok: false, status: r.status, error: r.text.slice(0, 200), ...view });
       }
@@ -978,6 +1008,8 @@ function accountsView(c) {
       cycleJitterMin: rangeText(a.cycleJitterMin),
       cycleHoldSec: rangeText(a.cycleHoldSec),
       wakeJitterMin: rangeText(a.wakeJitterMin),
+      touch: a.touch,
+      touchCmd: a.touch ? a.touchCmd : null,
       nextCycleAt: nextSlot(Date.now(), a.cycleTz, a.cycleAt, a.cycleJitterMin),
     })),
   };

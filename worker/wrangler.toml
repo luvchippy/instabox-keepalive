@@ -40,6 +40,14 @@ INSTABOX_AUTO_RESUME = "1"
 # INSTABOX_CYCLE_HOLD_SEC = "0-0"      # 停机时长：600-900 = 停 10-15 分钟（>600 秒要绑 KV）
 # INSTABOX_WAKE_JITTER_MIN = "0-0"     # 平台冷却后再等：0-5 = 总停机 10-15 分钟随机
 
+# ── 真实 exec 续命（本 fork 新增，默认开）──────────────────────────────
+# 平台只把「真实 use」算进 run 延长，activity lease 和 wake 都不算。
+# 不补 exec 的话 run 永远停在 120 分钟，兜底轮转每 100 分钟（120-20）就转一次。
+# 每轮 cron 补一条最轻的 exec 后，run 能涨到 480 分钟 → 一天只转 3 次。
+# 关掉：INSTABOX_TOUCH = "0"
+# INSTABOX_TOUCH = "1"
+# INSTABOX_TOUCH_CMD = "true"     # 想换成更重的活动信号就改这里（会占 1 个子请求）
+
 # 多账号：第 N 个账号 = 单账号变量名加 _N 后缀，加一个账号就多存一个 secret（别把 key 写进这个文件）：
 #   npx wrangler secret put INSTABOX_API_KEY_2      # 2 号账号
 #   npx wrangler secret put INSTABOX_API_KEY_3      # 3 号账号，依此类推
