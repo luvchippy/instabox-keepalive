@@ -1,0 +1,71 @@
+{
+  "_说明": "把 enable 改成 true 并填好 url/headers 即可。cookie 建议走 ${环境变量}，别明文写这里。",
+  "notify": {
+    "type": "none",
+    "_可选": "none | webhook(url) | telegram(token+chat_id)",
+    "url": "",
+    "token": "",
+    "chat_id": ""
+  },
+  "sites": [
+    {
+      "name": "smzdm-什么值得买",
+      "enable": false,
+      "method": "POST",
+      "url": "https://zhiyou.smzdm.com/user/checkin/jsonp_checkin",
+      "headers": {
+        "Cookie": "${SMZDM_COOKIE}",
+        "Referer": "https://www.smzdm.com/"
+      },
+      "expect": { "status": [200], "json_path": "error_code", "json_equals": 0 },
+      "retries": 2
+    },
+    {
+      "name": "v2ex-每日登录取铜币",
+      "enable": false,
+      "method": "GET",
+      "url": "https://www.v2ex.com/mission/daily",
+      "headers": { "Cookie": "${V2EX_COOKIE}" },
+      "expect": { "status": [200, 302] },
+      "retries": 1
+    },
+    {
+      "name": "hostloc-每日访问",
+      "enable": false,
+      "method": "GET",
+      "url": "https://hostloc.com/",
+      "headers": { "Cookie": "${HOSTLOC_COOKIE}" },
+      "expect": { "status": [200], "not_contains": ["请先登录"] },
+      "retries": 1
+    },
+    {
+      "name": "通用模板-COOKIE签到",
+      "enable": false,
+      "_说明": "method/cookie/成功关键字三处按站点改",
+      "method": "POST",
+      "url": "https://example.com/api/checkin",
+      "headers": {
+        "Cookie": "${SITE_COOKIE}",
+        "Referer": "https://example.com/"
+      },
+      "body": null,
+      "expect": { "status": [200], "contains": ["签到成功"] },
+      "retries": 2,
+      "timeout": 25
+    },
+    {
+      "name": "通用模板-TOKEN签到",
+      "enable": false,
+      "_说明": "Bearer token 形式的接口",
+      "method": "POST",
+      "url": "https://example.org/api/v1/sign",
+      "headers": {
+        "Authorization": "Bearer ${SITE_TOKEN}",
+        "Content-Type": "application/json"
+      },
+      "body": {},
+      "expect": { "status": [200], "json_path": "code", "json_equals": 0 },
+      "retries": 2
+    }
+  ]
+}
