@@ -40,12 +40,22 @@ api.instabox.sh ──唤醒──▶ 你的沙盒（5~10 秒）
    30 分钟无活动 → 自动 idle-suspend（免费、无冷却）→ 等下一次敲门
 ```
 
-**关键点：`POST /exec` 自带唤醒。** 不需要单独的 wake/resume 调用，一条 HTTP 请求搞定
-「叫醒 + 跑脚本 + 拿结果」。实测确认：
+**关键点：`POST /exec` 对「自己睡着的」机器自带唤醒**，不需要单独的 wake/resume 调用，
+一条 HTTP 请求搞定「叫醒 + 跑脚本 + 拿结果」。官方原文：
 
-```
-机器 suspended → POST /exec {"cmd":"..."} → 自动 resume → 命令执行 → 返回 stdout
-```
+> A machine that paused **itself** resumes when you use it again... A request that wakes the machine
+> waits up to 45 seconds for the resume and then runs.
+
+但有前提：**只对 idle-suspend 有效**（`autoSuspendedAt` 有值）。手动 `suspend` 过的机器
+（`desiredState=suspended`）走 exec 会返回 `409 machine_not_running`，必须先 `resume`。
+
+| 怎么睡的 | exec 自动唤醒 | 恢复方式 |
+|---|---|---|
+| 空闲 30 分钟自睡 | ✅ 5~10 秒 | 直接 exec |
+| 手动 suspend | ❌ 409 | `resume` |
+| stopped | ❌ 409 | `start` |
+
+**所以别手动 suspend 它**，让它自然睡即可。真需要兜底就用 Worker 版。
 
 ---
 
