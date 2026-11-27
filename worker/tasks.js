@@ -153,8 +153,10 @@ async function runOnce(env, opts = {}) {
 }
 
 function requireToken(env, url) {
-  if (!env.TASKS_TOKEN) return null;
-  if (url.searchParams.get("token") === env.TASKS_TOKEN) return null;
+  // 兼容 keepalive 时代留下的 TOKEN secret，免得重配
+  const want = env.TASKS_TOKEN || env.TOKEN;
+  if (!want) return null;
+  if (url.searchParams.get("token") === want) return null;
   return new Response(JSON.stringify({ ok: false, error: "token 不对" }), {
     status: 401, headers: { "Content-Type": "application/json" },
   });
