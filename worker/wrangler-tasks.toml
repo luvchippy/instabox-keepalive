@@ -1,0 +1,23 @@
+# 每日签到调度器（和 keepalive 二选一部署，cron 触发器名额有限）
+name = "instabox-tasks"
+main = "tasks.js"
+compatibility_date = "2026-11-26"
+
+# 每分钟跑一次，靠 TASKS_AT + TASKS_WINDOW_MIN 判断到点没有。
+# 免费版 cron 触发器上限 5 个/账号，这一条就够。
+[triggers]
+crons = ["* * * * *"]
+
+[vars]
+# 每天几点跑（本地时间，逗号分隔）；留空则永不自动跑，只能 HTTP 手动触发
+TASKS_AT = "08:05"
+TASKS_TZ = "Asia/Shanghai"
+TASKS_CMD = "bash /data/checkin/run.sh"
+# 到点后多少分钟内允许触发（cron 会抖，给足余量；run.sh 自带一天一次保护）
+TASKS_WINDOW_MIN = "15"
+# 跑完是否立刻 suspend（1 = 立刻睡，0 = 让它 30 分钟后自己 idle-suspend）
+TASKS_SUSPEND_AFTER = "0"
+# 机器名或 m_xxx；留空 = 该 key 名下第一台
+INSTABOX_MACHINE = ""
+
+# INSTABOX_API_KEY 和 TASKS_TOKEN 用 wrangler secret put 存，别写进这个文件
