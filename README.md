@@ -57,6 +57,14 @@ api.instabox.sh ──唤醒──▶ 你的沙盒（5~10 秒）
 
 **所以别手动 suspend 它**，让它自然睡即可。真需要兜底就用 Worker 版。
 
+> **⚠️ 冷唤醒实测 130 秒**，不是速记的 5~10 秒。长时间空闲后宿主机回收了内存气球，
+> 恢复要把页重新 fault-in。这直接决定方案选型：
+> - cron-job.org 单条 exec 会 30 秒超时（唤醒仍在服务端继续，但脚本没跑）→ 要拆成
+>   `resume` + `exec` 两条 job，间隔 5 分钟
+> - Worker 版没有这个限制（内部等满 240 秒 + 重试 retryable 409）→ 一条搞定
+>
+> 详见 [docs/cron-job.org.md](docs/cron-job.org.md#️-冷唤醒实测-130-秒超过-cron-joborg-的-30-秒超时)
+
 ---
 
 ## 三种调度器，选一个

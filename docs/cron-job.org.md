@@ -48,6 +48,74 @@ instabox 的 `POST /v1/machines/{id}/exec` 对**自己睡着**（idle-suspend）
 `/wake` 和 `/exec` 都不需要 `Idempotency-Key` 头，正好对上 cron-job.org 只能发固定请求的限制。
 （`resume` / `start` / `suspend` / `stop` 这些生命周期操作**需要**这个头，缺了返回 400。）
 
+### ⚠️ 冷唤醒实测 130 秒，超过 cron-job.org 的 30 秒超时
+
+这是本仓库最重要的一条实测数据（2026-11-27）：
+
+```
+自然 idle-suspend 后 → POST /exec
+  → 立刻返回 409 operation_conflict（retryable:true）
+  → state 变成 resuming
+  → 130 秒后才 running
+```
+
+原因：长时间空闲后宿主机把内存气球（balloon）回收了，恢复时要把页重新 fault-in，
+比刚挂起时（5~10 秒）慢一个数量级。
+
+**这对 cron-job.org 意味着什么：**
+
+| 现象 | 结果 |
+|---|---|
+| cron-job.org 30 秒超时 | ✅ 请求会在 30 秒断开，但**唤醒操作已经在服务端启动，会继续跑完** |
+| 那 30 秒的响应 | 是 `409 operation_conflict`（`retryable:true`），cron-job.org 会记成失败 |
+| 脚本跑了吗 | ❌ **没有**。exec 在 resume 期间被拒了，脚本没执行 |
+| 连续 25 次「失败」 | cron-job.org 会自动停用这个任务 |
+
+**所以单条 exec 在「长时间没跑」的场景下不可靠。** 三个解法：
+
+#### 解法 A：两条 job，间隔 5 分钟（cron-job.org 原生支持）
+
+```
+job A  每天 08:00   POST /v1/machines/{id}/resume   →  只负责把机器拉起来
+job B  每天 08:05   POST /v1/machines/{id}/exec     →  机器已经醒了，直接跑
+```
+
+`resume` 需要 `Idempotency-Key`。用固定的 `daily-resume` 是安全的：重复调用返回缓存的上次结果，
+不会重复执行。唯一风险是「缓存了成功但机器其实还睡着」——概率很低，且 job B 会再失败一次。
+
+> 5 分钟够不够？实测冷唤醒 130 秒，5 分钟有 2.3 倍余量。
+
+#### 解法 B：脚本自己先返回（推荐给急性子）
+
+让 exec 只做「确认机器醒着」，真正的活交给后台：
+
+```
+job 每天 08:00
+POST /exec  {"cmd":"nohup bash /data/checkin/run.sh > /data/checkin/logs/last.log 2>&1 & echo STARTED"}
+```
+
+- 30 秒内就能拿到 `STARTED`（如果机器已经醒了）；机器没醒仍然会 409
+- 脚本在后台跑，不受 30 秒限制
+- 代价：看不到签到结果，需要脚本自己推送（`config.json` 的 `notify`）
+
+#### 解法 C：用 Worker（最稳）
+
+[`worker/tasks.js`](../worker/tasks.js) 里已经处理了这两种情况：
+
+```js
+// 唤醒预算 240 秒（覆盖 130 秒冷唤醒）
+const wake = await ensureRunning(env, id, 240_000);
+// exec 遇到 retryable 409 会退避重试，最多 180 秒
+for (let attempt = 1; Date.now() < execDeadline; attempt++) {
+  exec = await api(env, "POST", `/v1/machines/${id}/exec`, { cmd });
+  if (exec.ok) break;
+  if (exec.json?.error?.retryable !== true) break;
+  await sleep(Math.min(5000 * attempt, 20000));
+}
+```
+
+Worker 的 cron 本身没有 30 秒限制，能等满 4 分钟。见 [cloudflare-worker.md](cloudflare-worker.md)。
+
 ## cron-job.org 的免费额度（官方 FAQ）
 
 | 项 | 值 |

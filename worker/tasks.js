@@ -91,17 +91,18 @@ async function resolveMachine(env) {
   return hit.id;
 }
 
-// 机器被挂起时先唤醒：resume 优先，stopped 用 start 兜底
-async function ensureRunning(env, id, budgetMs = 90_000) {
+// 机器被挂起时先唤醒：wake 治 idle-suspend，resume 治手动暂停，start 兜底 stopped。
+// 默认预算 240 秒 —— 实测冷唤醒（内存气球回收后）可达 130 秒。
+async function ensureRunning(env, id, budgetMs = 240_000) {
   const dead = Date.now() + budgetMs;
   let woke = [];
   while (Date.now() < dead) {
     const r = await api(env, "GET", `/v1/machines/${id}`);
     const state = r.json?.state;
+    // resuming 也是中间态，继续等
     if (state === "running" && r.json?.runtime?.ready) return { ok: true, state, woke };
-    if (state === "running") { await sleep(1500); continue; }
+    if (state === "running" || state === "resuming") { await sleep(1500); continue; }
     if (!woke.length) {
-      // wake 专治「自己睡着的」（idle-suspend），resume 治手动暂停，start 兜底 stopped
       for (const type of ["wake", "resume", "start"]) {
         const a = await api(env, "POST", `/v1/machines/${id}/${type}`, {},
           `tasks-${type}-${id}-${Date.now()}`);
@@ -119,12 +120,23 @@ async function runOnce(env, opts = {}) {
   const id = await resolveMachine(env);
   const cmd = (env.TASKS_CMD || CMD_DEFAULT).trim();
 
-  const wake = await ensureRunning(env, id);
+  const wake = await ensureRunning(env, id, Number(env.TASKS_WAKE_BUDGET_MS || 240_000));
   if (!wake.ok) {
     return { ok: false, at: new Date().toISOString(), machine: id, phase: "wake", wake, error: `唤醒失败（${wake.state}）` };
   }
 
-  const exec = await api(env, "POST", `/v1/machines/${id}/exec`, { cmd });
+  // 冷唤醒实测可达 130 秒（内存气球回收后要重新 fault-in）。
+  // 这期间 exec 返回的是 retryable 的 409 operation_conflict，必须重试，不能当失败。
+  let exec = null;
+  const execDeadline = Date.now() + Number(env.TASKS_EXEC_BUDGET_MS || 180_000);
+  for (let attempt = 1; Date.now() < execDeadline; attempt++) {
+    exec = await api(env, "POST", `/v1/machines/${id}/exec`, { cmd });
+    if (exec.ok) break;
+    const code = exec.json?.error?.code || "";
+    if (exec.json?.error?.retryable !== true && code !== "operation_conflict") break;
+    await sleep(Math.min(5000 * attempt, 20000));
+  }
+  if (!exec) exec = { ok: false, status: 0, text: "exec not attempted", json: null };
 
   // 可选：跑完立刻自己睡，状态确定、不多占 30 分钟
   let slept = null;
